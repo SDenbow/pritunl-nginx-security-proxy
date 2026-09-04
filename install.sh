@@ -145,6 +145,7 @@ ORIGINAL_SERVER_PORT="$(pritunl get app.server_port 2>/dev/null | awk '{print $N
 
 ORIGINAL_NGINX_INSTALLED=false
 ORIGINAL_NGINX_ACTIVE=false
+ORIGINAL_NGINX_ENABLED=false
 ORIGINAL_NGINX_SITE_AVAILABLE=false
 ORIGINAL_NGINX_SITE_ENABLED=false
 ORIGINAL_CERTBOT_RENEWAL=false
@@ -155,6 +156,10 @@ fi
 
 if systemctl is-active --quiet nginx 2>/dev/null; then
     ORIGINAL_NGINX_ACTIVE=true
+fi
+
+if systemctl is-enabled --quiet nginx 2>/dev/null; then
+    ORIGINAL_NGINX_ENABLED=true
 fi
 
 if [[ -f /etc/nginx/sites-available/pritunl.conf ]]; then
@@ -184,7 +189,7 @@ mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
 
 {
-    printf 'ROLLBACK_MANIFEST_VERSION=%q\n' "1"
+    printf 'ROLLBACK_MANIFEST_VERSION=%q\n' "2"
     printf 'FQDN=%q\n' "$FQDN"
     printf 'BACKEND_PORT=%q\n' "$BACKEND_PORT"
     printf 'ORIGINAL_REVERSE_PROXY=%q\n' "$ORIGINAL_REVERSE_PROXY"
@@ -193,6 +198,7 @@ chmod 700 "$BACKUP_DIR"
     printf 'ORIGINAL_SERVER_PORT=%q\n' "$ORIGINAL_SERVER_PORT"
     printf 'ORIGINAL_NGINX_INSTALLED=%q\n' "$ORIGINAL_NGINX_INSTALLED"
     printf 'ORIGINAL_NGINX_ACTIVE=%q\n' "$ORIGINAL_NGINX_ACTIVE"
+    printf 'ORIGINAL_NGINX_ENABLED=%q\n' "$ORIGINAL_NGINX_ENABLED"
     printf 'ORIGINAL_NGINX_SITE_AVAILABLE=%q\n' "$ORIGINAL_NGINX_SITE_AVAILABLE"
     printf 'ORIGINAL_NGINX_SITE_ENABLED=%q\n' "$ORIGINAL_NGINX_SITE_ENABLED"
     printf 'ORIGINAL_CERTBOT_RENEWAL=%q\n' "$ORIGINAL_CERTBOT_RENEWAL"
