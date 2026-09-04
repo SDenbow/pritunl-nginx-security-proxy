@@ -265,8 +265,17 @@ command -v certbot >/dev/null 2>&1     || die "Certbot installation verification
 
 nginx -V 2>&1 | grep -q -- '--with-http_sub_module'     || die "Installed Nginx does not include ngx_http_sub_module."
 
+CURRENT_REVERSE_PROXY="$(pritunl get app.reverse_proxy 2>/dev/null | awk '{print $NF}')"
+CURRENT_REDIRECT_SERVER="$(pritunl get app.redirect_server 2>/dev/null | awk '{print $NF}')"
+CURRENT_SERVER_SSL="$(pritunl get app.server_ssl 2>/dev/null | awk '{print $NF}')"
+CURRENT_SERVER_PORT="$(pritunl get app.server_port 2>/dev/null | awk '{print $NF}')"
+
 if systemctl is-active --quiet nginx; then
-    die "Nginx is unexpectedly running before Pritunl has been moved from ports 80/443."
+    if [[ "$CURRENT_SERVER_PORT" != "$BACKEND_PORT" ]]; then
+        die "Nginx is running while Pritunl is still configured for port ${CURRENT_SERVER_PORT}; refusing to continue."
+    fi
+
+    echo "Nginx is already active and Pritunl is already using backend port ${BACKEND_PORT}."
 fi
 
 echo "Nginx/Certbot preflight passed."
@@ -276,11 +285,6 @@ log "Checking Pritunl backend configuration"
 MIGRATION_STARTED=1
 
 PRITUNL_CHANGES=0
-
-CURRENT_REVERSE_PROXY="$(pritunl get app.reverse_proxy 2>/dev/null | awk '{print $NF}')"
-CURRENT_REDIRECT_SERVER="$(pritunl get app.redirect_server 2>/dev/null | awk '{print $NF}')"
-CURRENT_SERVER_SSL="$(pritunl get app.server_ssl 2>/dev/null | awk '{print $NF}')"
-CURRENT_SERVER_PORT="$(pritunl get app.server_port 2>/dev/null | awk '{print $NF}')"
 
 if [[ "$CURRENT_REVERSE_PROXY" != "true" ]]; then
     echo "Changing app.reverse_proxy: ${CURRENT_REVERSE_PROXY} -> true"
