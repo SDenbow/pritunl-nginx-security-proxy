@@ -77,18 +77,22 @@ The installer:
 4. Creates a full MongoDB dump of the `pritunl` database.
 5. Captures pre-install state in `rollback.env`.
 6. Performs fresh-host safety checks.
-7. Installs missing Nginx/Certbot packages when required.
-8. Verifies the Nginx HTTP substitution module is available.
-9. Changes Pritunl to reverse-proxy mode.
-10. Moves the Pritunl HTTPS web listener to the backend port.
-11. Restarts Pritunl only when its settings changed.
-12. Verifies the backend HTTPS service.
-13. Obtains or reuses the public Let's Encrypt certificate.
-14. Renders the production Nginx configuration.
-15. Starts or reloads Nginx.
-16. Installs the Certbot deploy hook.
-17. Runs the health check.
-18. Runs the authentication normalization test when `--known-user` is supplied.
+7. Validates the existing Pritunl ACME configuration.
+8. Verifies that SSO, when enabled, has an explicit `app.server_sso_url`.
+9. Installs missing Nginx/Certbot packages when required.
+10. Verifies the Nginx HTTP substitution module is available.
+11. Changes Pritunl to reverse-proxy mode.
+12. Moves the Pritunl HTTPS web listener to the backend port.
+13. Restarts Pritunl only when its settings changed.
+14. Verifies the backend HTTPS service.
+15. Obtains or reuses the public Let's Encrypt certificate.
+16. Renders the production Nginx configuration.
+17. Starts or reloads Nginx.
+18. Installs the Certbot deploy hook.
+19. Runs the health check.
+20. Disables Pritunl ACME renewal by setting `app.acme_domain = null`.
+21. Verifies that Pritunl ACME renewal is disabled.
+22. Runs the authentication normalization test when `--known-user` is supplied.
 
 ## Expected Final State
 
@@ -98,6 +102,7 @@ Pritunl:
     app.redirect_server = false
     app.server_ssl = true
     app.server_port = 8443
+    app.acme_domain = null
 
 Listeners:
 
@@ -152,7 +157,16 @@ After deployment:
 
 ## Certificate Renewal
 
-Certbot owns the public certificate.
+Certbot owns the public certificate after migration.
+
+Once Nginx and the public certificate pass the deployment health check, the
+installer sets:
+
+    app.acme_domain = null
+
+This prevents Pritunl from attempting its own ACME renewal. The existing
+Pritunl backend certificate and certificate state are retained so Pritunl can
+continue serving HTTPS on the localhost backend port.
 
 A deploy hook is installed under:
 
@@ -160,9 +174,28 @@ A deploy hook is installed under:
 
 The hook reloads Nginx after successful renewal.
 
-Validate renewal with:
+Validate Certbot renewal with:
 
     sudo certbot renew --dry-run
+
+A successful dry run confirms that Certbot can renew the public certificate
+independently of Pritunl ACME.
+
+## SSO Preflight
+
+Pritunl may use `app.acme_domain` as a fallback when constructing its SSO URL.
+
+Because the installer intentionally clears `app.acme_domain` after the public
+certificate handoff, deployments using SSO must have an explicit
+`app.server_sso_url` configured before migration.
+
+The installer checks this before changing Pritunl or Nginx configuration and
+fails safely if:
+
+- SSO is enabled; and
+- `app.server_sso_url` is unset.
+
+Resolve and validate the SSO URL before rerunning the installer.
 
 ## Failure Handling
 

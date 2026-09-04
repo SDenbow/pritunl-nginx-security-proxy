@@ -80,13 +80,22 @@ The installer rejects unsupported Ubuntu releases.
 
 Public TLS is managed by Certbot and Nginx.
 
-Pritunl continues to use HTTPS internally. Certificate validation is disabled
-for the localhost backend connection because the internal Pritunl certificate
-does not need to be publicly trusted.
+Pritunl continues to use HTTPS internally on the backend port. Certificate
+validation is disabled for the localhost backend connection because the
+internal Pritunl certificate does not need to be publicly trusted.
+
+After the public Nginx/Certbot configuration passes health validation, the
+installer disables Pritunl ACME renewal by setting:
+
+    app.acme_domain = null
+
+Only `app.acme_domain` is changed. The existing Pritunl backend certificate,
+private key, ACME account state, and ACME timestamp are not cleared by the
+installer.
 
 Port 80 remains available through Nginx for Let's Encrypt HTTP-01 validation.
 
-A Certbot deploy hook reloads Nginx following certificate renewal.
+A Certbot deploy hook reloads Nginx following successful certificate renewal.
 
 ## Authentication Normalization
 
@@ -155,11 +164,24 @@ absent or dedicated to this Pritunl proxy.
 
 ### Pritunl ACME configuration
 
-Existing Pritunl internal ACME settings are not automatically cleared.
+The installer transfers public certificate renewal responsibility from Pritunl
+to Certbot.
 
-Do not manually remove or modify Pritunl ACME configuration solely because
-Certbot/Nginx is managing the public certificate. This behavior must be
-reviewed separately before production rollout.
+After Nginx is running and the deployment health check succeeds, the installer
+sets:
+
+    app.acme_domain = null
+
+This disables Pritunl ACME renewal while preserving the existing Pritunl
+backend certificate and related certificate state.
+
+Do not use destructive certificate-reset operations as part of this
+migration.
+
+If Pritunl SSO is enabled, `app.server_sso_url` must already be explicitly
+configured before migration. The installer refuses to continue when SSO is
+enabled and `app.server_sso_url` is unset, because Pritunl can otherwise use
+`app.acme_domain` as an SSO URL fallback.
 
 ## Repository Security
 

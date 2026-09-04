@@ -107,6 +107,45 @@ done
 [[ $EUID -eq 0 ]] || die "Run this installer with sudo."
 [[ -n "$FQDN" ]] || die "--fqdn is required."
 
+validate_fqdn() {
+    local fqdn="$1"
+    local label
+
+    [[ ${#fqdn} -le 253 ]] \
+        || die "Invalid FQDN: exceeds 253 characters."
+
+    [[ "$fqdn" != .* && "$fqdn" != *. ]] \
+        || die "Invalid FQDN: leading or trailing dots are not allowed."
+
+    [[ "$fqdn" != *..* ]] \
+        || die "Invalid FQDN: empty DNS labels are not allowed."
+
+    IFS='.' read -r -a fqdn_labels <<< "$fqdn"
+
+    for label in "${fqdn_labels[@]}"; do
+        [[ -n "$label" && ${#label} -le 63 ]] \
+            || die "Invalid FQDN: each DNS label must be 1-63 characters."
+
+        [[ "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] \
+            || die "Invalid FQDN label: $label"
+    done
+}
+
+validate_fqdn "$FQDN"
+
+[[ "$BACKEND_PORT" =~ ^[0-9]+$ ]] \
+    || die "--backend-port must be numeric."
+
+[[ ${#BACKEND_PORT} -le 5 ]] \
+    || die "--backend-port must be between 1 and 65535."
+
+BACKEND_PORT_DEC=$((10#$BACKEND_PORT))
+
+(( BACKEND_PORT_DEC >= 1 && BACKEND_PORT_DEC <= 65535 )) \
+    || die "--backend-port must be between 1 and 65535."
+
+BACKEND_PORT="$BACKEND_PORT_DEC"
+
 if [[ ! -f /etc/os-release ]]; then
     die "Unable to determine operating system."
 fi
@@ -132,6 +171,11 @@ for cmd in pritunl systemctl curl sed ss; do
     command -v "$cmd" >/dev/null 2>&1 || die "Required command not found: $cmd"
 done
 
+for cmd in getent dpkg-query awk; do
+    command -v "$cmd" >/dev/null 2>&1 \
+        || die "Required command not found: $cmd"
+done
+
 TIMESTAMP="$(date -u +%Y%m%d-%H%M%S)"
 BACKUP_DIR="/root/pritunl-nginx-backup-${TIMESTAMP}"
 
@@ -142,6 +186,53 @@ ORIGINAL_REVERSE_PROXY="$(pritunl get app.reverse_proxy 2>/dev/null | awk '{prin
 ORIGINAL_REDIRECT_SERVER="$(pritunl get app.redirect_server 2>/dev/null | awk '{print $NF}')"
 ORIGINAL_SERVER_SSL="$(pritunl get app.server_ssl 2>/dev/null | awk '{print $NF}')"
 ORIGINAL_SERVER_PORT="$(pritunl get app.server_port 2>/dev/null | awk '{print $NF}')"
+ORIGINAL_ACME_DOMAIN="$(
+    pritunl get app.acme_domain 2>/dev/null |
+        sed -n 's/^app\.acme_domain = //p'
+)"
+
+[[ -n "$ORIGINAL_ACME_DOMAIN" ]] \
+    || die "Unable to read app.acme_domain."
+
+if [[ "$ORIGINAL_ACME_DOMAIN" != "null" ]]; then
+    [[ "$ORIGINAL_ACME_DOMAIN" =~ ^\"[A-Za-z0-9.-]+\"$ ]] \
+        || die "Invalid value returned for app.acme_domain."
+
+    ORIGINAL_ACME_DOMAIN_VALUE="${ORIGINAL_ACME_DOMAIN#\"}"
+    ORIGINAL_ACME_DOMAIN_VALUE="${ORIGINAL_ACME_DOMAIN_VALUE%\"}"
+    validate_fqdn "$ORIGINAL_ACME_DOMAIN_VALUE"
+fi
+
+CURRENT_SSO="$(
+    pritunl get app.sso 2>/dev/null |
+        sed -n 's/^app\.sso = //p'
+)"
+
+CURRENT_SERVER_SSO_URL="$(
+    pritunl get app.server_sso_url 2>/dev/null |
+        sed -n 's/^app\.server_sso_url = //p'
+)"
+
+[[ -n "$CURRENT_SSO" ]] \
+    || die "Unable to read app.sso."
+
+[[ -n "$CURRENT_SERVER_SSO_URL" ]] \
+    || die "Unable to read app.server_sso_url."
+
+SSO_ENABLED=false
+
+case "$CURRENT_SSO" in
+    null|false|'""')
+        ;;
+    *)
+        SSO_ENABLED=true
+        ;;
+esac
+
+if [[ "$SSO_ENABLED" == "true" ]] && \
+   [[ "$CURRENT_SERVER_SSO_URL" == "null" || "$CURRENT_SERVER_SSO_URL" == '""' ]]; then
+    die "SSO is enabled but app.server_sso_url is not configured. Set and verify app.server_sso_url before transferring certificate management from Pritunl to Certbot."
+fi
 
 ORIGINAL_NGINX_INSTALLED=false
 ORIGINAL_NGINX_ACTIVE=false
@@ -189,19 +280,20 @@ mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
 
 {
-    printf 'ROLLBACK_MANIFEST_VERSION=%q\n' "2"
-    printf 'FQDN=%q\n' "$FQDN"
-    printf 'BACKEND_PORT=%q\n' "$BACKEND_PORT"
-    printf 'ORIGINAL_REVERSE_PROXY=%q\n' "$ORIGINAL_REVERSE_PROXY"
-    printf 'ORIGINAL_REDIRECT_SERVER=%q\n' "$ORIGINAL_REDIRECT_SERVER"
-    printf 'ORIGINAL_SERVER_SSL=%q\n' "$ORIGINAL_SERVER_SSL"
-    printf 'ORIGINAL_SERVER_PORT=%q\n' "$ORIGINAL_SERVER_PORT"
-    printf 'ORIGINAL_NGINX_INSTALLED=%q\n' "$ORIGINAL_NGINX_INSTALLED"
-    printf 'ORIGINAL_NGINX_ACTIVE=%q\n' "$ORIGINAL_NGINX_ACTIVE"
-    printf 'ORIGINAL_NGINX_ENABLED=%q\n' "$ORIGINAL_NGINX_ENABLED"
-    printf 'ORIGINAL_NGINX_SITE_AVAILABLE=%q\n' "$ORIGINAL_NGINX_SITE_AVAILABLE"
-    printf 'ORIGINAL_NGINX_SITE_ENABLED=%q\n' "$ORIGINAL_NGINX_SITE_ENABLED"
-    printf 'ORIGINAL_CERTBOT_RENEWAL=%q\n' "$ORIGINAL_CERTBOT_RENEWAL"
+    printf 'ROLLBACK_MANIFEST_VERSION=%s\n' "3"
+    printf 'FQDN=%s\n' "$FQDN"
+    printf 'BACKEND_PORT=%s\n' "$BACKEND_PORT"
+    printf 'ORIGINAL_REVERSE_PROXY=%s\n' "$ORIGINAL_REVERSE_PROXY"
+    printf 'ORIGINAL_REDIRECT_SERVER=%s\n' "$ORIGINAL_REDIRECT_SERVER"
+    printf 'ORIGINAL_SERVER_SSL=%s\n' "$ORIGINAL_SERVER_SSL"
+    printf 'ORIGINAL_SERVER_PORT=%s\n' "$ORIGINAL_SERVER_PORT"
+    printf 'ORIGINAL_ACME_DOMAIN=%s\n' "$ORIGINAL_ACME_DOMAIN"
+    printf 'ORIGINAL_NGINX_INSTALLED=%s\n' "$ORIGINAL_NGINX_INSTALLED"
+    printf 'ORIGINAL_NGINX_ACTIVE=%s\n' "$ORIGINAL_NGINX_ACTIVE"
+    printf 'ORIGINAL_NGINX_ENABLED=%s\n' "$ORIGINAL_NGINX_ENABLED"
+    printf 'ORIGINAL_NGINX_SITE_AVAILABLE=%s\n' "$ORIGINAL_NGINX_SITE_AVAILABLE"
+    printf 'ORIGINAL_NGINX_SITE_ENABLED=%s\n' "$ORIGINAL_NGINX_SITE_ENABLED"
+    printf 'ORIGINAL_CERTBOT_RENEWAL=%s\n' "$ORIGINAL_CERTBOT_RENEWAL"
 } > "$BACKUP_DIR/rollback.env"
 
 chmod 600 "$BACKUP_DIR/rollback.env"
@@ -507,6 +599,33 @@ log "Running health check"
 "${SCRIPT_DIR}/scripts/health-check.sh" \
     "$FQDN" \
     "$BACKEND_PORT"
+
+log "Disabling Pritunl ACME renewal"
+
+CURRENT_ACME_DOMAIN="$(
+    pritunl get app.acme_domain 2>/dev/null |
+        sed -n 's/^app\.acme_domain = //p'
+)"
+
+[[ -n "$CURRENT_ACME_DOMAIN" ]] \
+    || die "Unable to read current app.acme_domain."
+
+if [[ "$CURRENT_ACME_DOMAIN" != "null" ]]; then
+    echo "Clearing app.acme_domain after successful Nginx/Certbot validation."
+    pritunl set app.acme_domain null
+else
+    echo "app.acme_domain already disabled."
+fi
+
+CURRENT_ACME_DOMAIN="$(
+    pritunl get app.acme_domain 2>/dev/null |
+        sed -n 's/^app\.acme_domain = //p'
+)"
+
+[[ "$CURRENT_ACME_DOMAIN" == "null" ]] \
+    || die "Pritunl ACME disable verification failed."
+
+echo "Pritunl ACME renewal is disabled."
 
 if [[ -n "$KNOWN_USER" ]]; then
     log "Running authentication-response normalization test"

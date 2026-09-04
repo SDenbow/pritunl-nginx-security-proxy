@@ -31,7 +31,7 @@ to proceed.
 
 Current rollback manifests use:
 
-    ROLLBACK_MANIFEST_VERSION=2
+    ROLLBACK_MANIFEST_VERSION=3
 
 The manifest records:
 
@@ -41,6 +41,7 @@ The manifest records:
 - original Pritunl redirect setting
 - original Pritunl SSL setting
 - original Pritunl web port
+- original Pritunl ACME domain
 - whether Nginx was installed
 - whether Nginx was active
 - whether Nginx was enabled at boot
@@ -48,8 +49,13 @@ The manifest records:
 - whether the Pritunl Nginx site was enabled
 - whether Certbot renewal configuration existed
 
+Manifest version 2 remains supported for backups created by earlier versions of
+the installer. Version 2 did not record the Pritunl ACME domain, so rollback
+from a version 2 manifest does not change Pritunl ACME configuration.
+
 The rollback script parses an explicit allowlist of manifest fields rather than
-executing the manifest as shell code.
+executing the manifest as shell code. Manifest FQDNs, ports, boolean values,
+and version 3 ACME-domain values are validated before rollback begins.
 
 ## Rollback Sequence
 
@@ -63,9 +69,15 @@ The rollback script:
 6. Restarts Pritunl.
 7. Verifies the original Pritunl port is listening.
 8. Verifies the Pritunl `/login` endpoint.
-9. Restores or removes the Pritunl Nginx site according to recorded state.
-10. Restores Nginx active/enabled state.
-11. Retains the backup directory.
+9. For a version 3 manifest, restores the recorded `app.acme_domain` value.
+10. Verifies that the ACME-domain restore succeeded.
+11. Restores or removes the Pritunl Nginx site according to recorded state.
+12. Restores Nginx active/enabled state.
+13. Retains the backup directory.
+
+The version 3 ACME-domain restore intentionally occurs only after Pritunl has
+successfully restarted and its original listener and `/login` endpoint have
+been verified.
 
 ## Conservative Rollback Behavior
 
@@ -88,7 +100,15 @@ Rollback does NOT delete Let's Encrypt certificates or private keys.
 It also does not automatically remove all Certbot state created during the
 migration.
 
-This is intentional to avoid destructive certificate operations.
+For version 3 manifests, rollback restores the original Pritunl
+`app.acme_domain` value after the original Pritunl web service has been
+verified healthy. This allows Pritunl to resume its pre-migration ACME
+configuration without deleting Certbot certificate material.
+
+Version 2 manifests do not contain the original Pritunl ACME domain, so
+version 2 rollback deliberately leaves ACME configuration unchanged.
+
+This conservative behavior avoids destructive certificate operations.
 
 ### Certbot deploy hook
 
@@ -134,6 +154,7 @@ Check settings:
     sudo pritunl get app.redirect_server
     sudo pritunl get app.server_ssl
     sudo pritunl get app.server_port
+    sudo pritunl get app.acme_domain
 
 Check services:
 
