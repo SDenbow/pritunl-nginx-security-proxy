@@ -1,6 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+MIGRATION_STARTED=0
+INSTALL_COMPLETE=0
+
+installation_exit_handler() {
+    local rc=$?
+
+    if [[ "$rc" -ne 0 && "$MIGRATION_STARTED" -eq 1 && "$INSTALL_COMPLETE" -eq 0 ]]; then
+        echo >&2
+        echo "============================================================" >&2
+        echo "WARNING: Pritunl/Nginx migration did not complete." >&2
+        echo "============================================================" >&2
+
+        if [[ -n "${BACKUP_DIR:-}" ]]; then
+            echo "Backup directory:" >&2
+            echo "  ${BACKUP_DIR}" >&2
+        fi
+
+        if [[ -n "${CURRENT_REVERSE_PROXY:-}" ]]; then
+            echo >&2
+            echo "Original Pritunl settings were:" >&2
+            echo "  app.reverse_proxy  = ${CURRENT_REVERSE_PROXY}" >&2
+            echo "  app.redirect_server = ${CURRENT_REDIRECT_SERVER}" >&2
+            echo "  app.server_ssl      = ${CURRENT_SERVER_SSL}" >&2
+            echo "  app.server_port     = ${CURRENT_SERVER_PORT}" >&2
+            echo >&2
+            echo "No automatic rollback was attempted." >&2
+        fi
+
+        echo "Review the failure before making additional changes." >&2
+        echo "============================================================" >&2
+    fi
+}
+
+trap installation_exit_handler EXIT
+
 BACKEND_PORT="8443"
 FQDN=""
 EMAIL=""
@@ -143,7 +178,102 @@ fi
 
 chmod -R go-rwx "$BACKUP_DIR"
 
+log "Running fresh-host preflight"
+
+DNS_IPV4="$(
+    {
+        getent ahostsv4 "$FQDN" 2>/dev/null || true
+    } |
+        awk '{print $1}' |
+        sort -u |
+        paste -sd, -
+)"
+
+[[ -n "$DNS_IPV4" ]]     || die "FQDN ${FQDN} does not resolve to an IPv4 address."
+
+echo "FQDN ${FQDN} resolves to:"
+echo "  ${DNS_IPV4}"
+
+if [[ -f "$CERT_PATH" && -f "$KEY_PATH" ]]; then
+    echo "Existing Certbot certificate found."
+else
+    echo "No existing Certbot certificate found."
+
+    [[ -n "$EMAIL" ]]         || die "--email is required before changing Pritunl because a new Let's Encrypt certificate must be issued."
+fi
+
+log "Preinstalling Nginx and Certbot"
+
+REQUIRED_PACKAGES=()
+
+dpkg-query -W -f='${Status}' nginx 2>/dev/null |
+    grep -q '^install ok installed$' ||
+    REQUIRED_PACKAGES+=(nginx)
+
+dpkg-query -W -f='${Status}' certbot 2>/dev/null |
+    grep -q '^install ok installed$' ||
+    REQUIRED_PACKAGES+=(certbot)
+
+dpkg-query -W -f='${Status}' python3-certbot-nginx 2>/dev/null |
+    grep -q '^install ok installed$' ||
+    REQUIRED_PACKAGES+=(python3-certbot-nginx)
+
+if [[ "${#REQUIRED_PACKAGES[@]}" -gt 0 ]]; then
+    echo "Packages to install:"
+    printf '  %s\n' "${REQUIRED_PACKAGES[@]}"
+
+    (
+        set -e
+
+        POLICY_FILE="/usr/sbin/policy-rc.d"
+        POLICY_BACKUP=""
+
+        restore_policy_rc() {
+            if [[ -n "$POLICY_BACKUP" && -f "$POLICY_BACKUP" ]]; then
+                cp -a "$POLICY_BACKUP" "$POLICY_FILE"
+            else
+                rm -f "$POLICY_FILE"
+            fi
+        }
+
+        trap restore_policy_rc EXIT
+
+        if [[ -e "$POLICY_FILE" ]]; then
+            POLICY_BACKUP="${BACKUP_DIR}/policy-rc.d.original"
+            cp -a "$POLICY_FILE" "$POLICY_BACKUP"
+        fi
+
+        cat > "$POLICY_FILE" <<'POLICY_EOF'
+#!/bin/sh
+exit 101
+POLICY_EOF
+
+        chmod 755 "$POLICY_FILE"
+
+        export DEBIAN_FRONTEND=noninteractive
+
+        apt-get update
+        apt-get install -y "${REQUIRED_PACKAGES[@]}"
+    )
+else
+    echo "Nginx and Certbot packages are already installed."
+fi
+
+command -v nginx >/dev/null 2>&1     || die "Nginx installation verification failed."
+
+command -v certbot >/dev/null 2>&1     || die "Certbot installation verification failed."
+
+nginx -V 2>&1 | grep -q -- '--with-http_sub_module'     || die "Installed Nginx does not include ngx_http_sub_module."
+
+if systemctl is-active --quiet nginx; then
+    die "Nginx is unexpectedly running before Pritunl has been moved from ports 80/443."
+fi
+
+echo "Nginx/Certbot preflight passed."
+
 log "Checking Pritunl backend configuration"
+
+MIGRATION_STARTED=1
 
 PRITUNL_CHANGES=0
 
@@ -217,15 +347,7 @@ BACKEND_CODE="$(
 
 echo "Backend HTTPS test passed."
 
-log "Installing Nginx and Certbot"
-
-export DEBIAN_FRONTEND=noninteractive
-
-apt-get update
-apt-get install -y nginx certbot python3-certbot-nginx
-
-nginx -V 2>&1 | grep -q -- '--with-http_sub_module' \
-    || die "Installed Nginx does not include ngx_http_sub_module."
+log "Preparing Nginx"
 
 mkdir -p /var/www/html
 
@@ -340,6 +462,8 @@ else
     echo "Run manually with:"
     echo "  ${SCRIPT_DIR}/scripts/test-auth.sh ${FQDN} <known-valid-username>"
 fi
+
+INSTALL_COMPLETE=1
 
 log "Installation complete"
 
