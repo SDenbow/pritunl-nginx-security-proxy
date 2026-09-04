@@ -71,6 +71,25 @@ done
 
 [[ $EUID -eq 0 ]] || die "Run this installer with sudo."
 [[ -n "$FQDN" ]] || die "--fqdn is required."
+
+if [[ ! -f /etc/os-release ]]; then
+    die "Unable to determine operating system."
+fi
+
+. /etc/os-release
+
+if [[ "${ID:-}" != "ubuntu" ]]; then
+    die "Unsupported operating system: ${PRETTY_NAME:-unknown}. This installer currently supports Ubuntu only."
+fi
+
+case "${VERSION_ID:-}" in
+    "22.04"|"24.04")
+        echo "Supported operating system detected: ${PRETTY_NAME}"
+        ;;
+    *)
+        die "Unsupported Ubuntu version: ${VERSION_ID:-unknown}. Supported versions are 22.04 and 24.04."
+        ;;
+esac
 [[ "$BACKEND_PORT" =~ ^[0-9]+$ ]] || die "Backend port must be numeric."
 [[ -f "$TEMPLATE" ]] || die "Missing template: $TEMPLATE"
 
