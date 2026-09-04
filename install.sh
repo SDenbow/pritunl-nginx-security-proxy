@@ -138,6 +138,37 @@ BACKUP_DIR="/root/pritunl-nginx-backup-${TIMESTAMP}"
 CERT_PATH="/etc/letsencrypt/live/${FQDN}/fullchain.pem"
 KEY_PATH="/etc/letsencrypt/live/${FQDN}/privkey.pem"
 
+ORIGINAL_REVERSE_PROXY="$(pritunl get app.reverse_proxy 2>/dev/null | awk '{print $NF}')"
+ORIGINAL_REDIRECT_SERVER="$(pritunl get app.redirect_server 2>/dev/null | awk '{print $NF}')"
+ORIGINAL_SERVER_SSL="$(pritunl get app.server_ssl 2>/dev/null | awk '{print $NF}')"
+ORIGINAL_SERVER_PORT="$(pritunl get app.server_port 2>/dev/null | awk '{print $NF}')"
+
+ORIGINAL_NGINX_INSTALLED=false
+ORIGINAL_NGINX_ACTIVE=false
+ORIGINAL_NGINX_SITE_AVAILABLE=false
+ORIGINAL_NGINX_SITE_ENABLED=false
+ORIGINAL_CERTBOT_RENEWAL=false
+
+if command -v nginx >/dev/null 2>&1; then
+    ORIGINAL_NGINX_INSTALLED=true
+fi
+
+if systemctl is-active --quiet nginx 2>/dev/null; then
+    ORIGINAL_NGINX_ACTIVE=true
+fi
+
+if [[ -f /etc/nginx/sites-available/pritunl.conf ]]; then
+    ORIGINAL_NGINX_SITE_AVAILABLE=true
+fi
+
+if [[ -e /etc/nginx/sites-enabled/pritunl.conf || -L /etc/nginx/sites-enabled/pritunl.conf ]]; then
+    ORIGINAL_NGINX_SITE_ENABLED=true
+fi
+
+if [[ -f "/etc/letsencrypt/renewal/${FQDN}.conf" ]]; then
+    ORIGINAL_CERTBOT_RENEWAL=true
+fi
+
 log "Installation parameters"
 echo "FQDN:         $FQDN"
 echo "Backend port: $BACKEND_PORT"
@@ -151,6 +182,23 @@ log "Creating backup"
 
 mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
+
+{
+    printf 'ROLLBACK_MANIFEST_VERSION=%q\n' "1"
+    printf 'FQDN=%q\n' "$FQDN"
+    printf 'BACKEND_PORT=%q\n' "$BACKEND_PORT"
+    printf 'ORIGINAL_REVERSE_PROXY=%q\n' "$ORIGINAL_REVERSE_PROXY"
+    printf 'ORIGINAL_REDIRECT_SERVER=%q\n' "$ORIGINAL_REDIRECT_SERVER"
+    printf 'ORIGINAL_SERVER_SSL=%q\n' "$ORIGINAL_SERVER_SSL"
+    printf 'ORIGINAL_SERVER_PORT=%q\n' "$ORIGINAL_SERVER_PORT"
+    printf 'ORIGINAL_NGINX_INSTALLED=%q\n' "$ORIGINAL_NGINX_INSTALLED"
+    printf 'ORIGINAL_NGINX_ACTIVE=%q\n' "$ORIGINAL_NGINX_ACTIVE"
+    printf 'ORIGINAL_NGINX_SITE_AVAILABLE=%q\n' "$ORIGINAL_NGINX_SITE_AVAILABLE"
+    printf 'ORIGINAL_NGINX_SITE_ENABLED=%q\n' "$ORIGINAL_NGINX_SITE_ENABLED"
+    printf 'ORIGINAL_CERTBOT_RENEWAL=%q\n' "$ORIGINAL_CERTBOT_RENEWAL"
+} > "$BACKUP_DIR/rollback.env"
+
+chmod 600 "$BACKUP_DIR/rollback.env"
 
 if [[ -f /etc/pritunl.conf ]]; then
     cp -a /etc/pritunl.conf "$BACKUP_DIR/"
@@ -265,10 +313,10 @@ command -v certbot >/dev/null 2>&1     || die "Certbot installation verification
 
 nginx -V 2>&1 | grep -q -- '--with-http_sub_module'     || die "Installed Nginx does not include ngx_http_sub_module."
 
-CURRENT_REVERSE_PROXY="$(pritunl get app.reverse_proxy 2>/dev/null | awk '{print $NF}')"
-CURRENT_REDIRECT_SERVER="$(pritunl get app.redirect_server 2>/dev/null | awk '{print $NF}')"
-CURRENT_SERVER_SSL="$(pritunl get app.server_ssl 2>/dev/null | awk '{print $NF}')"
-CURRENT_SERVER_PORT="$(pritunl get app.server_port 2>/dev/null | awk '{print $NF}')"
+CURRENT_REVERSE_PROXY="$ORIGINAL_REVERSE_PROXY"
+CURRENT_REDIRECT_SERVER="$ORIGINAL_REDIRECT_SERVER"
+CURRENT_SERVER_SSL="$ORIGINAL_SERVER_SSL"
+CURRENT_SERVER_PORT="$ORIGINAL_SERVER_PORT"
 
 if systemctl is-active --quiet nginx; then
     if [[ "$CURRENT_SERVER_PORT" != "$BACKEND_PORT" ]]; then
